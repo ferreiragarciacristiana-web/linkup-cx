@@ -27,7 +27,7 @@ function renderList(){
 function renderDetail(){
  if(!selected){$('detail').innerHTML='<div class="empty">Nenhuma oportunidade cadastrada.</div>';return}
  const x=selected;
- $('detail').innerHTML=`<div class="detailHead"><div><div class="label">Oportunidade selecionada</div><div class="big">${esc(x.name)}</div><div class="headline">${esc(x.headline)}</div><div class="company">${esc(x.company)}</div></div><span class="priority">Prioridade ${esc(x.priority)}</span></div><div class="reason"><b>Por que é estratégica?</b><br>${esc(x.why)}</div><div class="post"><div class="label">Publicação recomendada para interação</div><div class="postTitle">${esc(x.tema||'Tema aderente ao seu posicionamento')}</div><p>${esc(x.post||'Nenhuma publicação cadastrada.')}</p></div><div class="ai"><div class="aihead"><b>Sugestão de comentário</b><span class="badge">${isLive?'Comentário armazenado':'IA simulada'}</span></div>${isLive?'':`<div class="tones"><button class="tone on" onclick="setTone(this,'Estratégico')">Estratégico</button><button class="tone" onclick="setTone(this,'Conversacional')">Conversacional</button><button class="tone" onclick="setTone(this,'Reflexivo')">Reflexivo</button></div>`}<textarea id="comment">${esc(isLive?(x.comentario_editado||x.comentario_sugerido||''):x.comments['Estratégico'])}</textarea><div class="actions">${isLive?`<select id="stage" style="padding:10px;border:1px solid #d6dbe3;border-radius:10px"><option>Identificada</option><option>Quero interagir</option><option>Interação realizada</option><option>Descartada</option></select><button class="btn primary" onclick="saveInteraction()">Salvar interação</button>`:`<button class="btn primary" onclick="approve()">Aprovar sugestão</button><button class="btn secondary" onclick="regenerate()">Gerar outra versão</button>`}</div></div><div class="note">${isLive?'As alterações são enviadas ao Supabase. Nenhum comentário é publicado no LinkedIn.':'Publicar no LinkedIn seria uma conexão futura. Nesta demonstração, nenhuma ação externa é realizada.'}</div>`;
+ $('detail').innerHTML=`<div class="detailHead"><div><div class="label">Oportunidade selecionada</div><div class="big">${esc(x.name)}</div><div class="headline">${esc(x.headline)}</div><div class="company">${esc(x.company)}</div></div><span class="priority">Prioridade ${esc(x.priority)}</span></div><div class="reason"><b>Por que é estratégica?</b><br>${esc(x.why)}</div><div class="post"><div class="label">Publicação recomendada para interação</div><div class="postTitle">${esc(x.tema||'Tema aderente ao seu posicionamento')}</div><p>${esc(x.post||'Nenhuma publicação cadastrada.')}</p></div><div class="ai"><div class="aihead"><b>Sugestão de comentário</b><span class="badge">${isLive?'Copiloto com IA':'IA simulada'}</span></div>${isLive?'<p class="sub" style="margin:0 0 10px">O Gemini pode propor um comentário a partir da publicação. Revise antes de salvar ou publicar manualmente.</p>':''}${isLive?'':`<div class="tones"><button class="tone on" onclick="setTone(this,'Estratégico')">Estratégico</button><button class="tone" onclick="setTone(this,'Conversacional')">Conversacional</button><button class="tone" onclick="setTone(this,'Reflexivo')">Reflexivo</button></div>`}<textarea id="comment">${esc(isLive?(x.comentario_editado||x.comentario_sugerido||''):x.comments['Estratégico'])}</textarea><div class="actions">${isLive?`<button class="btn secondary" id="generateAI" onclick="generateAIComment()">Gerar comentário com IA</button><select id="stage" style="padding:10px;border:1px solid #d6dbe3;border-radius:10px"><option>Identificada</option><option>Quero interagir</option><option>Interação realizada</option><option>Descartada</option></select><button class="btn primary" onclick="saveInteraction()">Salvar interação</button>`:`<button class="btn primary" onclick="approve()">Aprovar sugestão</button><button class="btn secondary" onclick="regenerate()">Gerar outra versão</button>`}</div></div><div class="note">${isLive?'As alterações são enviadas ao Supabase. Nenhum comentário é publicado no LinkedIn.':'Publicar no LinkedIn seria uma conexão futura. Nesta demonstração, nenhuma ação externa é realizada.'}</div>`;
  if(isLive)$('stage').value=x.etapa_atual||'Identificada';
 }
 function selectPerson(id){selected=(isLive?liveRows:data).find(x=>x.id===id);renderList();renderDetail()}
@@ -96,6 +96,59 @@ async function loadRadar(){
  });
  isLive=true;selected=liveRows[0]||null;renderList();renderDetail();status('Conectado ao Supabase. '+liveRows.length+' contato(s) carregado(s).');
 }
+async function generateAIComment(){
+  if(!isLive||!client||!loggedUser||!selected){toast('Entre no Supabase e selecione um contato.');return}
+  if(!selected.post?.trim()){toast('Este contato não possui publicação para analisar.');return}
+  const button=$('generateAI');
+  const currentId=selected.id;
+  button.disabled=true;button.textContent='Gerando com IA...';
+  status('Copiloto de Networking: solicitando sugestão ao Gemini...');
+  try{
+    const {data:sessionData,error:sessionError}=await client.auth.getSession();
+    if(sessionError||!sessionData.session?.access_token)throw new Error('Sessão expirada. Entre novamente.');
+    const payload={
+      nome:selected.name,
+      headline:selected.headline,
+      empresa:selected.company,
+      publicacao:selected.post,
+      conteudo:selected.post,
+      tema:selected.tema||'Customer Success e Customer Experience',
+      tom:'Estratégico',
+      comentario_atual:$('comment').value,
+      contexto_profissional:{
+        area:$('area').value,
+        cargos_alvo:$('level').value,
+        temas_interesse:$('targets').value
+      }
+    };
+    const response=await fetch(SUPABASE_URL+'/functions/v1/gerar-comentario-ia',{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'apikey':localStorage.getItem('linkup_public_key')||'',
+        'Authorization':'Bearer '+sessionData.session.access_token
+      },
+      body:JSON.stringify(payload)
+    });
+    const raw=await response.text();
+    let result;
+    try{result=JSON.parse(raw)}catch{throw new Error('Resposta inesperada da função (HTTP '+response.status+').')}
+    if(!response.ok)throw new Error(result.error||result.message||'Falha HTTP '+response.status);
+    const comment=result.comentario||result.comment||result.texto;
+    if(typeof comment!=='string'||!comment.trim())throw new Error('A função não retornou um comentário.');
+    if(selected?.id!==currentId){status('Comentário gerado, mas você mudou de contato. Gere novamente para o contato atual.');return}
+    $('comment').value=comment.trim();
+    status('Comentário gerado pelo Gemini. Revise o texto e clique em Salvar interação para persistir no banco.');
+    toast('Sugestão da IA recebida. Revise antes de salvar.');
+  }catch(error){
+    status('Não foi possível gerar o comentário: '+error.message);
+    toast('Falha no Copiloto de Networking.');
+  }finally{
+    const currentButton=$('generateAI');
+    if(currentButton&&selected?.id===currentId){currentButton.disabled=false;currentButton.textContent='Gerar comentário com IA'}
+  }
+}
+
 async function saveInteraction(){
  if(!isLive||!selected?.interactionId){toast('Esta publicação ainda não possui interação vinculada.');return}
  const newStage=$('stage').value,comment=$('comment').value,oldStage=selected.etapa_atual;
